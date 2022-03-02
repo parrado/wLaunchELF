@@ -290,7 +290,7 @@ int loadFont(char *path_arg);
 
 extern u32 joy_value;
 extern u32 new_pad;
-extern int semRunning,semFinish;
+extern int semRunning, semFinish;
 extern int isRunning;
 int setupPad(void);
 int readpad(void);

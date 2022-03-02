@@ -1199,7 +1199,7 @@ static void loadUsbModules(void)
         USB_mass_max_drives = USB_MASS_MAX_DRIVES;  // allow multiple drives
     else
         USB_mass_max_drives = 1;  // else allow only one mass drive
-        
+
     loadDs34Modules();
 }
 //------------------------------
@@ -1714,8 +1714,8 @@ static void CleanUp(void)
     if (ps2kbd_opened)
         PS2KbdClose();
     WaitSema(semRunning);
-    isRunning=0;
-    SignalSema(semRunning);	
+    isRunning = 0;
+    SignalSema(semRunning);
     WaitSema(semFinish);
     ds34usb_reset();
     ds34bt_reset();

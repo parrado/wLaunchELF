@@ -1931,7 +1931,7 @@ u64 getFileSize(const char *path, const FILEINFO *file)
 //------------------------------
 // endfunc getFileSize
 //--------------------------------------------------------------
-int delete (const char *path, const FILEINFO *file)
+int delete(const char *path, const FILEINFO *file)
 {
     FILEINFO files[MAX_ENTRY];
     char party[MAX_NAME], dir[MAX_PATH], hdddir[MAX_PATH];

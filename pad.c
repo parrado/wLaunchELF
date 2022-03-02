@@ -21,7 +21,7 @@ u32 new_pad, new_pad_t[4];
 u32 joy_value = 0;
 static int test_joy = 0;
 
-int semPoll,semRunning,semFinish;
+int semPoll, semRunning, semFinish;
 int isRunning;
 
 // Semaphore ID for polling
@@ -37,13 +37,13 @@ void padPollingThread(void *args)
     pollingTime.tv_nsec = POLLING_TIME;
 
     while (1) {
-    
-    	WaitSema(semRunning);
-	iIsRunning=isRunning;
-	SignalSema(semRunning);
-		
-	if(iIsRunning==0)
-		break;
+
+        WaitSema(semRunning);
+        iIsRunning = isRunning;
+        SignalSema(semRunning);
+
+        if (iIsRunning == 0)
+            break;
 
         state = padGetState(0, 0);
         if (state == PAD_STATE_STABLE || (state == PAD_STATE_FINDCTP1)) {
@@ -80,7 +80,7 @@ void padPollingThread(void *args)
         SignalSema(semPoll);
         nanosleep(&pollingTime, NULL);
     }
-    
+
     SignalSema(semFinish);
     ExitDeleteThread();
 }
@@ -109,7 +109,7 @@ void padPollingInit(void)
     th_attr.initial_priority = 2;
     th_attr.attr = th_attr.option = 0;
 
-    isRunning=1;
+    isRunning = 1;
     thr_id = CreateThread(&th_attr);
     StartThread(thr_id, NULL);
 }
