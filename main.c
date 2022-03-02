@@ -65,6 +65,10 @@ extern u8 dvrdrv_irx[];
 extern int size_dvrdrv_irx;
 extern u8 dvrfile_irx[];
 extern int size_dvrfile_irx;
+extern u8 ds34usb_irx[];
+extern int size_ds34usb_irx;
+extern u8 ds34bt_irx[];
+extern int size_ds34bt_irx;
 
 //#define DEBUG
 #ifdef DEBUG
@@ -120,6 +124,7 @@ static u8 have_DVRP_HDD_modules = 0;
 static u8 have_cdvd = 0;
 static u8 have_usbd = 0;
 static u8 have_usb_mass = 0;
+static u8 have_ds34 = 0;
 static u8 have_ps2smap = 0;
 static u8 have_ps2host = 0;
 static u8 have_ps2ftpd = 0;
@@ -1175,6 +1180,14 @@ static void loadUsbDModule(void)
 //------------------------------
 // endfunc loadUsbDModule
 //---------------------------------------------------------------------------
+static void loadDs34Modules(void)
+{
+    if (!have_ds34) {
+        if (loadExternalModule("", &ds34usb_irx, size_ds34usb_irx))
+            if (loadExternalModule("", &ds34bt_irx, size_ds34bt_irx))
+                have_ds34 = 1;
+    }
+}
 static void loadUsbModules(void)
 {
     loadUsbDModule();
@@ -1186,6 +1199,8 @@ static void loadUsbModules(void)
         USB_mass_max_drives = USB_MASS_MAX_DRIVES;  // allow multiple drives
     else
         USB_mass_max_drives = 1;  // else allow only one mass drive
+        
+    loadDs34Modules();
 }
 //------------------------------
 // endfunc loadUsbModules
@@ -1698,6 +1713,12 @@ static void CleanUp(void)
     //    padEnd();  //Required when a newer libpad library is used.
     if (ps2kbd_opened)
         PS2KbdClose();
+    WaitSema(semRunning);
+    isRunning=0;
+    SignalSema(semRunning);	
+    WaitSema(semFinish);
+    ds34usb_reset();
+    ds34bt_reset();
 }
 //------------------------------
 // endfunc CleanUp

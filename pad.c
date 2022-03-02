@@ -2,15 +2,124 @@
 // File name:   pad.c
 //---------------------------------------------------------------------------
 #include "launchelf.h"
+#include <ps2sdkapi.h>
+#include <kernel.h>
+#include <timer.h>
+#include <time.h>
+
+// Pad polling time in nanoseconds
+#define POLLING_TIME (10 * 1000000)
+
 
 static char padBuf_t[2][256] __attribute__((aligned(64)));
-struct padButtonStatus buttons_t[2];
-u32 padtype_t[2];
-u32 paddata, paddata_t[2];
-u32 old_pad = 0, old_pad_t[2] = {0, 0};
-u32 new_pad, new_pad_t[2];
+struct padButtonStatus buttons_t[4];
+u32 padtype_t[4];
+u32 paddata, paddata_t[4];
+u32 old_pad = 0, old_pad_t[4] = {0, 0, 0, 0};
+int ret[4] = {0, 0, 0, 0};
+u32 new_pad, new_pad_t[4];
 u32 joy_value = 0;
 static int test_joy = 0;
+
+int semPoll,semRunning,semFinish;
+int isRunning;
+
+// Semaphore ID for polling
+int semPoll;
+
+// Pads polling thread
+void padPollingThread(void *args)
+{
+    int state;
+    int iIsRunning;
+    struct timespec pollingTime;
+    pollingTime.tv_sec = 0;
+    pollingTime.tv_nsec = POLLING_TIME;
+
+    while (1) {
+    
+    	WaitSema(semRunning);
+	iIsRunning=isRunning;
+	SignalSema(semRunning);
+		
+	if(iIsRunning==0)
+		break;
+
+        state = padGetState(0, 0);
+        if (state == PAD_STATE_STABLE || (state == PAD_STATE_FINDCTP1)) {
+            ret[0] = padRead(0, 0, &buttons_t[0]);
+            if (ret[0] != 0)
+                paddata_t[0] = 0xffff ^ buttons_t[0].btns;
+        }
+
+        state = padGetState(1, 0);
+        if (state == PAD_STATE_STABLE || (state == PAD_STATE_FINDCTP1)) {
+            ret[1] = padRead(1, 0, &buttons_t[1]);
+            if (ret[1] != 0)
+                paddata_t[1] = 0xffff ^ buttons_t[1].btns;
+        }
+
+
+        if (ds34bt_get_status(0) & DS34BT_STATE_RUNNING) {
+            ret[2] = ds34bt_get_data(0, (u8 *)&buttons_t[2].btns);
+            ds34bt_set_rumble(0, 0, 0);
+            if (ret[2] != 0) {
+                paddata_t[2] = 0xffff ^ buttons_t[2].btns;
+            }
+        }
+
+        if (ds34usb_get_status(0) & DS34USB_STATE_RUNNING) {
+            ret[3] = ds34usb_get_data(0, (u8 *)&buttons_t[3].btns);
+            ds34usb_set_rumble(0, 0, 0);
+            if (ret[3] != 0) {
+                paddata_t[3] = 0xffff ^ buttons_t[3].btns;
+            }
+        }
+
+        // Signal readpad_no* functions
+        SignalSema(semPoll);
+        nanosleep(&pollingTime, NULL);
+    }
+    
+    SignalSema(semFinish);
+    ExitDeleteThread();
+}
+
+// Polling thread init
+void padPollingInit(void)
+{
+
+    ee_thread_t th_attr;
+    int thr_id;
+    ee_sema_t semData;
+    static unsigned char stack[4096] __attribute__((aligned(16)));
+
+    semData.option = semData.attr = 0;
+    semData.init_count = 0;
+    semData.max_count = 1;
+    semPoll = CreateSema(&semData);
+    semFinish = CreateSema(&semData);
+    semData.init_count = 1;
+    semRunning = CreateSema(&semData);
+
+    th_attr.func = padPollingThread;
+    th_attr.stack = stack;
+    th_attr.stack_size = 4096;
+    th_attr.gp_reg = &_gp;
+    th_attr.initial_priority = 2;
+    th_attr.attr = th_attr.option = 0;
+
+    isRunning=1;
+    thr_id = CreateThread(&th_attr);
+    StartThread(thr_id, NULL);
+}
+
+
+
+u64 msTime()
+{
+    return (ps2_clock() / PS2_CLOCKS_PER_MSEC);
+}
 
 //---------------------------------------------------------------------------
 // read PAD, without KB, and allow no auto-repeat. This is needed in code
@@ -18,25 +127,19 @@ static int test_joy = 0;
 //---------------------------------------------------------------------------
 int readpad_noKBnoRepeat(void)
 {
-    int port, state, ret[2];
+    int port, state;
 
-    for (port = 0; port < 2; port++) {
-        if ((state = padGetState(port, 0)) == PAD_STATE_STABLE || (state == PAD_STATE_FINDCTP1)) {
-            // Deal with cases where pad state is valid for padRead
-            ret[port] = padRead(port, 0, &buttons_t[port]);
-            if (ret[port] != 0) {
-                paddata_t[port] = 0xffff ^ buttons_t[port].btns;
-                new_pad_t[port] = paddata_t[port] & ~old_pad_t[port];
-                old_pad_t[port] = paddata_t[port];
-            }
-        } else {
-            // Deal with cases where pad state is not valid for padRead
-            new_pad_t[port] = 0;
-        }                                   // ends 'if' testing for state valid for padRead
-    }                                       // ends for
-    new_pad = new_pad_t[0] | new_pad_t[1];  // This has only new button bits
-    paddata = paddata_t[0] | paddata_t[1];  // This has all pressed button bits
-    return (ret[0] | ret[1]);
+    WaitSema(semPoll);
+
+    for (port = 0; port < 4; port++) {
+
+        new_pad_t[port] = paddata_t[port] & ~old_pad_t[port];
+        old_pad_t[port] = paddata_t[port];
+
+    }                                                                     // ends for
+    new_pad = new_pad_t[0] | new_pad_t[1] | new_pad_t[2] | new_pad_t[3];  // This has only new button bits
+    paddata = paddata_t[0] | paddata_t[1] | paddata_t[2] | paddata_t[3];  // This has all pressed button bits
+    return (ret[0] | ret[1] | ret[2] | ret[3]);
 }
 //------------------------------
 // endfunc readpad_noKBnoRepeat
@@ -46,70 +149,70 @@ int readpad_noKBnoRepeat(void)
 //---------------------------------------------------------------------------
 int readpad_no_KB(void)
 {
-    static u64 rpt_time[2] = {0, 0};
-    static int rpt_count[2];
-    int port, state, ret[2];
+    static u64 rpt_time[4] = {0, 0, 0, 0};
+    static int rpt_count[4] = {0, 0, 0, 0};
+    int port;
 
-    for (port = 0; port < 2; port++) {
-        if ((state = padGetState(port, 0)) == PAD_STATE_STABLE || (state == PAD_STATE_FINDCTP1)) {
-            // Deal with cases where pad state is valid for padRead
-            ret[port] = padRead(port, 0, &buttons_t[port]);
-            if (ret[port] != 0) {
-                paddata_t[port] = 0xffff ^ buttons_t[port].btns;
-                if ((padtype_t[port] == 2) && (1 & (test_joy++))) {  // DualShock && time for joy scan
-                    joy_value = 0;
-                    if (buttons_t[port].rjoy_h >= 0xbf) {
-                        paddata_t[port] = PAD_R3_H1;
-                        joy_value = buttons_t[port].rjoy_h - 0xbf;
-                    } else if (buttons_t[port].rjoy_h <= 0x40) {
-                        paddata_t[port] = PAD_R3_H0;
-                        joy_value = -(buttons_t[port].rjoy_h - 0x40);
-                    } else if (buttons_t[port].rjoy_v <= 0x40) {
-                        paddata_t[port] = PAD_R3_V0;
-                        joy_value = -(buttons_t[port].rjoy_v - 0x40);
-                    } else if (buttons_t[port].rjoy_v >= 0xbf) {
-                        paddata_t[port] = PAD_R3_V1;
-                        joy_value = buttons_t[port].rjoy_v - 0xbf;
-                    } else if (buttons_t[port].ljoy_h >= 0xbf) {
-                        paddata_t[port] = PAD_L3_H1;
-                        joy_value = buttons_t[port].ljoy_h - 0xbf;
-                    } else if (buttons_t[port].ljoy_h <= 0x40) {
-                        paddata_t[port] = PAD_L3_H0;
-                        joy_value = -(buttons_t[port].ljoy_h - 0x40);
-                    } else if (buttons_t[port].ljoy_v <= 0x40) {
-                        paddata_t[port] = PAD_L3_V0;
-                        joy_value = -(buttons_t[port].ljoy_v - 0x40);
-                    } else if (buttons_t[port].ljoy_v >= 0xbf) {
-                        paddata_t[port] = PAD_L3_V1;
-                        joy_value = buttons_t[port].ljoy_v - 0xbf;
-                    }
+    WaitSema(semPoll);
+
+    for (port = 0; port < 4; port++) {
+        if (ret[port] != 0) {
+            if ((padtype_t[port] == 2) && (1 & (test_joy++))) {  // DualShock && time for joy scan
+                joy_value = 0;
+                if (buttons_t[port].rjoy_h >= 0xbf) {
+                    paddata_t[port] = PAD_R3_H1;
+                    joy_value = buttons_t[port].rjoy_h - 0xbf;
+                } else if (buttons_t[port].rjoy_h <= 0x40) {
+                    paddata_t[port] = PAD_R3_H0;
+                    joy_value = -(buttons_t[port].rjoy_h - 0x40);
+                } else if (buttons_t[port].rjoy_v <= 0x40) {
+                    paddata_t[port] = PAD_R3_V0;
+                    joy_value = -(buttons_t[port].rjoy_v - 0x40);
+                } else if (buttons_t[port].rjoy_v >= 0xbf) {
+                    paddata_t[port] = PAD_R3_V1;
+                    joy_value = buttons_t[port].rjoy_v - 0xbf;
+                } else if (buttons_t[port].ljoy_h >= 0xbf) {
+                    paddata_t[port] = PAD_L3_H1;
+                    joy_value = buttons_t[port].ljoy_h - 0xbf;
+                } else if (buttons_t[port].ljoy_h <= 0x40) {
+                    paddata_t[port] = PAD_L3_H0;
+                    joy_value = -(buttons_t[port].ljoy_h - 0x40);
+                } else if (buttons_t[port].ljoy_v <= 0x40) {
+                    paddata_t[port] = PAD_L3_V0;
+                    joy_value = -(buttons_t[port].ljoy_v - 0x40);
+                } else if (buttons_t[port].ljoy_v >= 0xbf) {
+                    paddata_t[port] = PAD_L3_V1;
+                    joy_value = buttons_t[port].ljoy_v - 0xbf;
                 }
-                new_pad_t[port] = paddata_t[port] & ~old_pad_t[port];
-                if (old_pad_t[port] == paddata_t[port]) {
-                    // no change of pad data
-                    if (Timer() > rpt_time[port]) {
-                        new_pad_t[port] = paddata_t[port];  // Accept repeated buttons as new
-                        rpt_time[port] = Timer() + 40;      // Min delay = 40ms => 25Hz repeat
-                        if (rpt_count[port]++ < 20)
-                            rpt_time[port] += 43;  // Early delays = 83ms => 12Hz repeat
-                    }
-                } else {
-                    // pad data has changed !
-                    rpt_count[port] = 0;
-                    rpt_time[port] = Timer() + 400;  // Init delay = 400ms
-                    old_pad_t[port] = paddata_t[port];
+            }
+            new_pad_t[port] = paddata_t[port] & ~old_pad_t[port];
+            if (old_pad_t[port] == paddata_t[port]) {
+
+                // no change of pad data
+                if (msTime() > rpt_time[port]) {
+                    new_pad_t[port] = paddata_t[port];  // Accept repeated buttons as new
+                    rpt_time[port] = msTime() + 40;     // Min delay = 40ms => 25Hz repeat
+                    if (rpt_count[port]++ < 20)
+                        rpt_time[port] += 43;  // Early delays = 83ms => 12Hz repeat
                 }
+            } else {
+                // pad data has changed !
+                rpt_count[port] = 0;
+                rpt_time[port] = msTime() + 400;  // Init delay = 400ms
+                old_pad_t[port] = paddata_t[port];
             }
         } else {
             // Deal with cases where pad state is not valid for padRead
             // NB: This should NOT clear KB repeat test variables
             new_pad_t[port] = 0;
-            // old_pad_t[port]=0; //Clearing this could cause hasty repeats
+            // old_pad_t[port] = 0;  //Clearing this could cause hasty repeats
         }  // ends 'if' testing for state valid for padRead
-    }      // ends for
-    new_pad = new_pad_t[0] | new_pad_t[1];
-    paddata = paddata_t[0] | paddata_t[1];  // This has all pressed button bits
-    return (ret[0] | ret[1]);
+    }
+    // ends for
+
+    new_pad = new_pad_t[0] | new_pad_t[1] | new_pad_t[2] | new_pad_t[3];
+    paddata = paddata_t[0] | paddata_t[1] | paddata_t[2] | paddata_t[3];  // This has all pressed button bits
+    return (ret[0] | ret[1] | ret[2] | ret[3]);
 }
 //------------------------------
 // endfunc readpad_no_KB
@@ -313,6 +416,8 @@ int setupPad(void)
     int ret, i, port, state, modes;
 
     padInit(0);
+    ds34usb_init();
+    ds34bt_init();
 
     for (port = 0; port < 2; port++) {
         padtype_t[port] = 0;  // Assume that we don't have a proper PS2 controller
@@ -342,6 +447,10 @@ int setupPad(void)
             waitPadReady(port, 0);                                             // Await completion
         }
     }  // ends for (port)
+
+    padtype_t[2] = 2;
+    padtype_t[3] = 2;
+    padPollingInit();
     return 1;
 }
 //---------------------------------------------------------------------------
